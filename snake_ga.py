@@ -216,7 +216,7 @@ class SimpleGeneticAlgorithm:
             self.population.append(network)
     
     def evaluate_population(self, env_params: dict) -> List[float]:
-        task_queue = Queue()
+        task_queue = JoinableQueue()
         result_queue = Queue()
         
         # 创建任务
