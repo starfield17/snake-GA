@@ -228,7 +228,8 @@ class ImprovedParallelGeneticAlgorithm:
         return np.mean(diversities) if diversities else 0
     
     def evaluate_fitness_parallel(self, env_params: dict) -> List[float]:
-        with mp.Pool(self.num_workers) as pool:
+        pool = mp.Pool(self.num_workers)
+        try:
             eval_func = partial(evaluate_network, 
                               env_params=env_params,
                               games_per_network=self.games_per_network)
@@ -238,6 +239,7 @@ class ImprovedParallelGeneticAlgorithm:
             for network in self.population:
                 diversity = self.get_population_diversity(network)
                 diversity_scores.append(diversity)
+                
             if diversity_scores:
                 min_div = min(diversity_scores)
                 max_div = max(diversity_scores)
@@ -245,12 +247,16 @@ class ImprovedParallelGeneticAlgorithm:
                     diversity_scores = [(d - min_div) / (max_div - min_div) for d in diversity_scores]
                 else:
                     diversity_scores = [1.0] * len(diversity_scores)
+                    
             self.fitness_scores = [
                 base_fit * (1 - self.diversity_weight) + div * self.diversity_weight 
                 for base_fit, div in zip(base_fitness_scores, diversity_scores)
             ]
             
-        return self.fitness_scores
+            return self.fitness_scores
+        finally:
+            pool.close()
+            pool.join()
     
     def select_parent(self) -> NeuralNetwork:
         tournament = random.sample(list(enumerate(self.fitness_scores)), self.tournament_size)
@@ -313,6 +319,8 @@ class ImprovedParallelGeneticAlgorithm:
         self.population = new_population
 
 def train_snake_ga_parallel_improved(generations=5000):
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
     env_params = {
         'width': WIDTH,
         'height': HEIGHT,
@@ -320,7 +328,7 @@ def train_snake_ga_parallel_improved(generations=5000):
         'max_steps_without_food': 200
     }
     
-    ga = ImprovedParallelGeneticAlgorithm()
+    ga = ImprovedParallelGeneticAlgorithm(num_workers=min(os.cpu_count(), 8))
     best_score = 0
     best_networks = []
     
