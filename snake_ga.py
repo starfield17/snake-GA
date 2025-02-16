@@ -8,6 +8,142 @@ from queue import Queue
 import copy
 import time
 
+WIDTH = 600
+HEIGHT = 400
+GRID_SIZE = 20
+class NeuralNetwork(nn.Module):
+    def __init__(self, input_size=19, hidden_size=128, output_size=4):
+        super(NeuralNetwork, self).__init__()
+        self.network = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_size // 2, output_size),
+            nn.Softmax(dim=-1)
+        )
+        
+        for layer in self.network:
+            if isinstance(layer, nn.Linear):
+                nn.init.kaiming_normal_(layer.weight)
+                nn.init.zeros_(layer.bias)
+    
+    def forward(self, x):
+        return self.network(x)
+    
+    def get_weights(self) -> List[np.ndarray]:
+        return [param.data.numpy() for param in self.parameters()]
+    
+    def set_weights(self, weights: List[np.ndarray]):
+        for param, weight in zip(self.parameters(), weights):
+            param.data = torch.FloatTensor(weight)
+
+class SnakeEnv:
+    def __init__(self, width, height, grid_size, max_steps_without_food=200):
+        self.width = width
+        self.height = height
+        self.grid_size = grid_size
+        self.max_steps_without_food = max_steps_without_food
+        self.reset()
+    
+    def reset(self):
+        self.snake = [(self.width//2, self.height//2)]
+        self.dx, self.dy = self.grid_size, 0
+        self.food = self._new_food()
+        self.score = 0
+        self.steps = 0
+        self.steps_without_food = 0
+        self.game_over = False
+        return self._get_state()
+    
+    def _new_food(self):
+        while True:
+            x = random.randint(0, (self.width-self.grid_size)//self.grid_size) * self.grid_size
+            y = random.randint(0, (self.height-self.grid_size)//self.grid_size) * self.grid_size
+            if (x, y) not in self.snake:
+                return (x, y)
+
+    def _check_collision(self, x, y):
+        return 1.0 if (x < 0 or x >= self.width or 
+                      y < 0 or y >= self.height or 
+                      (x, y) in self.snake) else 0.0
+    
+    def step(self, action):
+        self.steps += 1
+        self.steps_without_food += 1
+        
+        current_dx, current_dy = self.dx, self.dy
+
+        if action == 0 and current_dy != self.grid_size:  # 上
+            self.dx, self.dy = 0, -self.grid_size
+        elif action == 1 and current_dx != -self.grid_size:  # 右
+            self.dx, self.dy = self.grid_size, 0
+        elif action == 2 and current_dy != -self.grid_size:  # 下
+            self.dx, self.dy = 0, self.grid_size
+        elif action == 3 and current_dx != self.grid_size:  # 左
+            self.dx, self.dy = -self.grid_size, 0
+            
+        new_head = (self.snake[0][0] + self.dx, self.snake[0][1] + self.dy)
+        
+        if (new_head in self.snake or 
+            new_head[0] < 0 or 
+            new_head[0] >= self.width or 
+            new_head[1] < 0 or 
+            new_head[1] >= self.height):
+            self.game_over = True
+            return self._get_state(), -1
+        
+        self.snake.insert(0, new_head)
+        
+        reward = 0.1
+        
+        if self.snake[0] == self.food:
+            self.score += 1
+            self.food = self._new_food()
+            self.steps_without_food = 0
+            reward = 1.0 + (len(self.snake) * 0.1)
+        else:
+            self.snake.pop()
+        if self.steps_without_food >= self.max_steps_without_food:
+            self.game_over = True
+            reward = -0.5 
+            
+        return self._get_state(), reward
+    
+    def _get_state(self):
+        head_x, head_y = self.snake[0]
+        food_x, food_y = self.food
+        
+        food_distance = ((food_x - head_x)**2 + (food_y - head_y)**2)**0.5
+        food_direction = [
+            float(food_x < head_x),
+            float(food_x > head_x),
+            float(food_y < head_y),
+            float(food_y > head_y) 
+        ]
+        
+        danger_map = []
+        for dy in [-self.grid_size, 0, self.grid_size]:
+            for dx in [-self.grid_size, 0, self.grid_size]:
+                if dx == 0 and dy == 0:
+                    continue 
+                danger_map.append(self._check_collision(head_x + dx, head_y + dy))
+        
+        state = [
+            (food_x - head_x) / self.width,
+            (food_y - head_y) / self.height,
+            food_distance / (self.width**2 + self.height**2)**0.5,
+            self.dx / self.grid_size,
+            self.dy / self.grid_size,
+            *food_direction,
+            *danger_map,
+            len(self.snake) / (self.width * self.height / (self.grid_size * self.grid_size)),
+            self.steps / self.max_steps_without_food
+        ]
+        return np.array(state, dtype=np.float32)
+        
 class NetworkEvaluator(threading.Thread):
     def __init__(self, task_queue, result_queue, env_params):
         super().__init__()
