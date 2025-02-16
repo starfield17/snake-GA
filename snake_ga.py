@@ -7,7 +7,7 @@ import threading
 from queue import Queue
 import copy
 import time
-from multiprocessing import Process, Queue, cpu_count 
+from multiprocessing import JoinableQueue, Queue, Process, cpu_count
 
 WIDTH = 600
 HEIGHT = 400
