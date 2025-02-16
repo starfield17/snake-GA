@@ -137,7 +137,7 @@ class SnakeGame:
             self.draw_score_trend(panel_x, 350)
     
     def draw_action_bars(self, x, y):
-        actions = ["↑", "→", "↓", "←"]
+        actions = ["up", "right", "down", "left"]
         max_width = 150
         
         title = self.small_font.render("Action Probabilities:", True, (200, 200, 200))
