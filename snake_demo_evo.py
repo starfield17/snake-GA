@@ -1,13 +1,12 @@
 import pygame
 import sys
-import torch
-import glob
-import os
-import time
 import numpy as np
-from stable_baselines3 import PPO
+import gymnasium as gym
 from gymnasium import spaces
-
+import torch
+from stable_baselines3 import PPO
+import time
+import os
 # 保持与训练代码相同的环境设置
 WIDTH = 600
 HEIGHT = 400
@@ -24,7 +23,117 @@ GRAY = (40, 40, 40)
 YELLOW = (255, 255, 0)
 
 pygame.init()
-
+class SnakeEnvDemo(gym.Env):
+    def __init__(self, width=600, height=400, grid_size=20):
+        super().__init__()
+        self.width = width
+        self.height = height
+        self.grid_size = grid_size
+        
+        # 定义动作空间 (上、右、下、左)
+        self.action_space = spaces.Discrete(4)
+        
+        # 定义观察空间 (与训练时相同的19个状态值)
+        self.observation_space = spaces.Box(
+            low=-1.0, high=1.0, shape=(19,), dtype=np.float32
+        )
+        
+        self.reset()
+    
+    def reset(self, seed=None):
+        super().reset(seed=seed)
+        self.snake = [(self.width//2, self.height//2)]
+        self.dx, self.dy = self.grid_size, 0
+        self.food = self._new_food()
+        self.score = 0
+        self.steps = 0
+        return self._get_state(), {}
+    
+    def _new_food(self):
+        while True:
+            x = np.random.randint(0, self.width//self.grid_size) * self.grid_size
+            y = np.random.randint(0, self.height//self.grid_size) * self.grid_size
+            if (x, y) not in self.snake:
+                return (x, y)
+    
+    def _get_state(self):
+        head_x, head_y = self.snake[0]
+        food_x, food_y = self.food
+        
+        food_distance = ((food_x - head_x)**2 + (food_y - head_y)**2)**0.5
+        food_direction = [
+            float(food_x < head_x),
+            float(food_x > head_x),
+            float(food_y < head_y),
+            float(food_y > head_y)
+        ]
+        
+        danger_map = []
+        for dy in [-self.grid_size, 0, self.grid_size]:
+            for dx in [-self.grid_size, 0, self.grid_size]:
+                if dx == 0 and dy == 0:
+                    continue
+                danger_map.append(self._check_collision(head_x + dx, head_y + dy))
+        
+        state = np.array([
+            (food_x - head_x) / self.width,
+            (food_y - head_y) / self.height,
+            food_distance / (self.width**2 + self.height**2)**0.5,
+            self.dx / self.grid_size,
+            self.dy / self.grid_size,
+            *food_direction,
+            *danger_map,
+            len(self.snake) / (self.width * self.height / (self.grid_size * self.grid_size)),
+            self.steps / 1000.0  # 使用一个大数来归一化步数
+        ], dtype=np.float32)
+        
+        return state
+    
+    def _check_collision(self, x, y):
+        return 1.0 if (x < 0 or x >= self.width or 
+                      y < 0 or y >= self.height or 
+                      (x, y) in self.snake) else 0.0
+    
+    def step(self, action):
+        self.steps += 1
+        terminated = False
+        
+        # 更新蛇的方向
+        current_dx, current_dy = self.dx, self.dy
+        if action == 0 and current_dy != self.grid_size:  # 上
+            self.dx, self.dy = 0, -self.grid_size
+        elif action == 1 and current_dx != -self.grid_size:  # 右
+            self.dx, self.dy = self.grid_size, 0
+        elif action == 2 and current_dy != -self.grid_size:  # 下
+            self.dx, self.dy = 0, self.grid_size
+        elif action == 3 and current_dx != self.grid_size:  # 左
+            self.dx, self.dy = -self.grid_size, 0
+        
+        # 移动蛇头
+        new_head = (self.snake[0][0] + self.dx, self.snake[0][1] + self.dy)
+        
+        # 检查碰撞
+        if (new_head in self.snake or 
+            new_head[0] < 0 or new_head[0] >= self.width or 
+            new_head[1] < 0 or new_head[1] >= self.height):
+            terminated = True
+            reward = -1
+            return self._get_state(), reward, terminated, False, {'score': self.score}
+        
+        self.snake.insert(0, new_head)
+        
+        # 基础奖励
+        reward = 0.1
+        
+        # 吃到食物
+        if self.snake[0] == self.food:
+            self.score += 1
+            self.food = self._new_food()
+            reward = 1.0 + (len(self.snake) * 0.1)
+        else:
+            self.snake.pop()
+        
+        return self._get_state(), reward, terminated, False, {'score': self.score}
 class SnakeGame:
     def __init__(self):
         # 设置窗口和标题
@@ -54,9 +163,8 @@ class SnakeGame:
         self.best_score = 0
         self.last_10_scores = []
         
-        # 创建环境
-        from snake_ai import SnakeEnv  # 导入我们之前定义的环境
-        self.env = SnakeEnv(WIDTH, HEIGHT, GRID_SIZE)
+        # 创建演示环境（使用无步数限制的版本）
+        self.env = SnakeEnvDemo(WIDTH, HEIGHT, GRID_SIZE)
     
     def _load_model(self):
         model_path = "./models/snake_final_model.zip"
