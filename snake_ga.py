@@ -88,7 +88,10 @@ class SnakeEnv(gym.Env):
         self.steps += 1
         terminated = False
         
+        # 保存当前方向
         current_dx, current_dy = self.dx, self.dy
+        
+        # 根据动作更新方向
         if action == 0 and current_dy != self.grid_size:  # 上
             self.dx, self.dy = 0, -self.grid_size
         elif action == 1 and current_dx != -self.grid_size:  # 右
@@ -98,8 +101,10 @@ class SnakeEnv(gym.Env):
         elif action == 3 and current_dx != self.grid_size:  # 左
             self.dx, self.dy = -self.grid_size, 0
         
+        # 计算新的头部位置
         new_head = (self.snake[0][0] + self.dx, self.snake[0][1] + self.dy)
         
+        # 检查是否撞墙或撞到自己
         if (new_head in self.snake or 
             new_head[0] < 0 or new_head[0] >= self.width or 
             new_head[1] < 0 or new_head[1] >= self.height):
@@ -107,17 +112,45 @@ class SnakeEnv(gym.Env):
             reward = -1
             return self._get_state(), reward, terminated, False, {'score': self.score}
         
+        # 计算移动前到食物的距离
+        old_distance = ((self.snake[0][0] - self.food[0])**2 + 
+                       (self.snake[0][1] - self.food[1])**2)**0.5
+        
+        # 计算移动后到食物的距离
+        new_distance = ((new_head[0] - self.food[0])**2 + 
+                       (new_head[1] - self.food[1])**2)**0.5
+        
+        # 根据距离变化计算奖励
+        distance_reward = (old_distance - new_distance) * 0.01
+        
+        # 添加新的头部
         self.snake.insert(0, new_head)
         
-        reward = 0.1
+        # 基础奖励（降低生存奖励）
+        reward = 0.01 + distance_reward
         
+        # 如果吃到食物
         if self.snake[0] == self.food:
             self.score += 1
             self.food = self._new_food()
-            reward = 1.0 + (len(self.snake) * 0.1)
+            # 增加吃到食物的奖励，并根据蛇长度增加奖励
+            reward = 2.0 + (len(self.snake) * 0.2)
         else:
             self.snake.pop()
         
+        # 检查重复移动
+        if not hasattr(self, 'position_history'):
+            self.position_history = []
+        
+        self.position_history.append(new_head)
+        if len(self.position_history) > 50:  # 保持最近50步的历史
+            self.position_history.pop(0)
+            # 如果最近50步中重复位置过多
+            unique_positions = len(set(self.position_history))
+            if unique_positions < 10:  # 如果不同位置少于10个
+                reward -= 0.5  # 给予重复移动惩罚
+        
+        # 检查最大步数
         if self.steps >= self.max_steps:
             terminated = True
             reward = -0.5
