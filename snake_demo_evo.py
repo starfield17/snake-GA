@@ -21,7 +21,7 @@ YELLOW = (255, 255, 0)
 WIDTH = 600
 HEIGHT = 400
 GRID_SIZE = 20
-SPEED = 30
+global SPEED = 30
 
 class SnakeGame:
     def __init__(self):
