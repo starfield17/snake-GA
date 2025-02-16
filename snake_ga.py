@@ -8,9 +8,11 @@ from gymnasium import spaces
 import numpy as np
 import torch
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
+from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor,SubprocVecEnv
 from stable_baselines3.common.callbacks import EvalCallback
+from stable_baselines3.common.utils import set_random_seed
 import os
+import multiprocessing
 
 class SnakeEnv(gym.Env):
     # [保持 SnakeEnv 类的实现不变]
@@ -122,25 +124,33 @@ class SnakeEnv(gym.Env):
         
         return self._get_state(), reward, terminated, False, {'score': self.score}
 
-def make_env():
+def make_env(rank, seed=0):
+    """
+    创建环境的工厂函数，用于并行环境
+    """
     def _init():
         env = SnakeEnv()
+        env.reset(seed=(seed + rank))
         return env
+    set_random_seed(seed)
     return _init
 
 def train_snake(total_timesteps=1000000):
-    # 创建日志目录
+    # 创建日志和模型目录
     log_dir = "./logs"
     model_dir = "./models"
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
 
-    # 创建向量化环境
-    env = DummyVecEnv([make_env()])
+    # 确定可用的 CPU 核心数，留出一个核心给系统
+    num_cpu = max(1, multiprocessing.cpu_count() - 1)
+    
+    # 创建并行环境
+    env = SubprocVecEnv([make_env(i) for i in range(num_cpu)])
     env = VecMonitor(env)
     
-    # 创建评估环境
-    eval_env = DummyVecEnv([make_env()])
+    # 创建评估环境（单个环境即可）
+    eval_env = SubprocVecEnv([make_env(num_cpu)])
     eval_callback = EvalCallback(
         eval_env,
         best_model_save_path=model_dir,
@@ -150,7 +160,7 @@ def train_snake(total_timesteps=1000000):
         render=False
     )
     
-    # 检查是否安装了tensorboard
+    # 检查是否安装了 tensorboard
     try:
         import tensorboard
         tensorboard_log = "./snake_tensorboard/"
@@ -158,19 +168,24 @@ def train_snake(total_timesteps=1000000):
         print("TensorBoard not installed. Training will proceed without TensorBoard logging.")
         tensorboard_log = None
     
+    # 优化批处理大小和步数以适应并行环境
+    n_steps = 2048 // num_cpu  # 确保总步数保持不变
+    batch_size = min(64 * num_cpu, n_steps * num_cpu)  # 根据并行度调整批处理大小
+    
     # 创建并训练模型
     model = PPO(
         "MlpPolicy",
         env,
         verbose=1,
         learning_rate=3e-4,
-        n_steps=2048,
-        batch_size=64,
+        n_steps=n_steps,
+        batch_size=batch_size,
         n_epochs=10,
         gamma=0.99,
         gae_lambda=0.95,
         clip_range=0.2,
-        tensorboard_log=tensorboard_log
+        tensorboard_log=tensorboard_log,
+        device='cpu'  # 确保使用 CPU 训练
     )
     
     try:
@@ -184,14 +199,20 @@ def train_snake(total_timesteps=1000000):
     finally:
         # 保存最终模型
         model.save(os.path.join(model_dir, "snake_final_model"))
+        # 清理环境
+        env.close()
+        eval_env.close()
     
     return model
 
 if __name__ == "__main__":
-    print("Starting Snake AI training...")
+    print(f"Starting Snake AI training using {max(1, multiprocessing.cpu_count() - 1)} CPU cores...")
     print("Required packages: gymnasium, numpy, torch, stable-baselines3")
     print("Optional package: tensorboard (for training visualization)")
     print("\nPress Ctrl+C to stop training and save the model")
     print("=" * 50)
+    
+    # 设置全局随机种子
+    set_random_seed(42)
     
     model = train_snake()
