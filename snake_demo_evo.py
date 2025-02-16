@@ -2,6 +2,8 @@ import pygame
 import sys
 import torch
 from snake_ga import NeuralNetwork, SnakeEnv
+import glob
+import os
 
 pygame.init()
 
@@ -26,12 +28,43 @@ class SnakeGame:
         
         # 加载模型
         self.model = NeuralNetwork()
+        model_files = glob.glob("snake_ga_best_*.pth")
+        
+        if not model_files:
+            print("No model files found.")
+            sys.exit(1)
+        
+        best_model_path = None
+        max_score = -float('inf')
+        
+        for file_path in model_files:
+            filename = os.path.basename(file_path)
+            parts = filename.split('_')
+            
+            if len(parts) < 4:
+                continue
+                
+            score_part = parts[-1]
+            score_str = os.path.splitext(score_part)[0]
+            
+            try:
+                score = float(score_str)
+                if score > max_score:
+                    max_score = score
+                    best_model_path = file_path
+            except ValueError:
+                continue  
+        
+        if not best_model_path:
+            print("No valid model files found.")
+            sys.exit(1)
+            
         try:
-            self.model.load_state_dict(torch.load("snake_ga_best.pth"))
+            self.model.load_state_dict(torch.load(best_model_path))
             self.model.eval()
-            print("Successfully loaded model from snake_ga_best.pth")
-        except:
-            print("Could not load model file. Please train the model first.")
+            print(f"Successfully loaded model from {best_model_path} (Score: {max_score})")
+        except Exception as e:
+            print(f"Error loading model: {e}")
             sys.exit(1)
         
         self.games_played = 0
@@ -83,7 +116,7 @@ class SnakeGame:
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
                         running = False
-                    elif event.key == pygame.K_SPACE:  # 空格键重置游戏
+                    elif event.key == pygame.K_SPACE:
                         state = self.env.reset()
             
             state_tensor = torch.FloatTensor(state).unsqueeze(0)
