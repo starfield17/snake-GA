@@ -21,7 +21,7 @@ YELLOW = (255, 255, 0)
 WIDTH = 600
 HEIGHT = 400
 GRID_SIZE = 20
-global SPEED = 30
+SPEED = 30
 
 class SnakeGame:
     def __init__(self):
@@ -172,6 +172,7 @@ class SnakeGame:
             pygame.draw.lines(self.screen, YELLOW, False, points, 2)
     
     def run(self):
+        global SPEED
         running = True
         state = self.env.reset()
         last_time = time.time()
