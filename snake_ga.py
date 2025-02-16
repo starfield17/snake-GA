@@ -36,7 +36,7 @@ class SnakeEnv(gym.Env):
         self.food = self._new_food()
         self.score = 0
         self.steps = 0
-        self.max_steps = 200
+        self.max_steps = max(12000, len(self.snake) * 100)
         return self._get_state(), {}
     
     def _new_food(self):
@@ -135,7 +135,7 @@ def make_env(rank, seed=0):
     set_random_seed(seed)
     return _init
 
-def train_snake(total_timesteps=1000000):
+def train_snake(total_timesteps=10000000):
     # 创建日志和模型目录
     log_dir = "./logs"
     model_dir = "./models"
@@ -177,17 +177,16 @@ def train_snake(total_timesteps=1000000):
         "MlpPolicy",
         env,
         verbose=1,
-        learning_rate=3e-4,
+        learning_rate=2e-4,
         n_steps=n_steps,
         batch_size=batch_size,
         n_epochs=10,
-        gamma=0.99,
-        gae_lambda=0.95,
-        clip_range=0.2,
+        gamma=0.995,
+        gae_lambda=0.98,
+        clip_range=0.15,
         tensorboard_log=tensorboard_log,
         device='cpu'  # 确保使用 CPU 训练
     )
-    
     try:
         model.learn(
             total_timesteps=total_timesteps,
