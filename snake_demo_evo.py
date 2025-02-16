@@ -28,7 +28,7 @@ class SnakeGame:
         
         # 加载模型
         self.model = NeuralNetwork()
-        model_files = glob.glob("snake_ga_best_*.pth")
+        model_files = glob.glob("snake_best_*.pth")
         
         if not model_files:
             print("No model files found.")
