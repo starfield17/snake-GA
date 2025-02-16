@@ -217,7 +217,7 @@ class SnakeGame:
                 state = self.env.reset()
             
             # 渲染
-            self.screen.fill(BLACK)
+            self.screen.fill(WHITE)
             self.draw_grid()
             self.draw_snake()
             self.draw_food()
