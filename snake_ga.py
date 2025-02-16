@@ -7,6 +7,8 @@ import multiprocessing as mp
 from functools import partial
 import sys 
 import copy
+import resource
+import os
 WIDTH = 600
 HEIGHT = 400
 GRID_SIZE = 20
