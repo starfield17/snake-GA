@@ -7,6 +7,7 @@ import threading
 from queue import Queue
 import copy
 import time
+from multiprocessing import Process, Queue, cpu_count 
 
 WIDTH = 600
 HEIGHT = 400
@@ -144,7 +145,7 @@ class SnakeEnv:
         ]
         return np.array(state, dtype=np.float32)
         
-class NetworkEvaluator(threading.Thread):
+class NetworkEvaluator(Process):
     def __init__(self, task_queue, result_queue, env_params):
         super().__init__()
         self.task_queue = task_queue
@@ -165,7 +166,7 @@ class NetworkEvaluator(threading.Thread):
             except:
                 break
     
-    def evaluate_single_network(self, network, games=3):
+    def evaluate_single_network(self, network, games=4):
         env = SnakeEnv(**self.env_params)
         total_score = 0
         total_steps = 0
@@ -197,11 +198,11 @@ class NetworkEvaluator(threading.Thread):
 
 class SimpleGeneticAlgorithm:
     def __init__(self, 
-                 population_size: int = 100,
+                 population_size: int = 200,
                  mutation_rate: float = 0.3,
                  mutation_strength: float = 0.5,
                  elite_size: int = 5,
-                 num_threads: int = 8):
+                 num_threads: int = cpu_count()):
         self.population_size = population_size
         self.mutation_rate = mutation_rate
         self.mutation_strength = mutation_strength
@@ -303,7 +304,7 @@ def train_snake(generations=5000):
         'max_steps_without_food': 200
     }
     
-    ga = SimpleGeneticAlgorithm()
+    ga = SimpleGeneticAlgorithm(num_threads=cpu_count())
     best_score = 0
     best_networks = []
     start_time = time.time()
