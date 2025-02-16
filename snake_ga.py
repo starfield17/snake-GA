@@ -36,7 +36,7 @@ class SnakeEnv(gym.Env):
         self.food = self._new_food()
         self.score = 0
         self.steps = 0
-        self.max_steps = max(12000, len(self.snake) * 100)
+        self.max_steps = max(12000, len(self.snake) * 200)
         return self._get_state(), {}
     
     def _new_food(self):
