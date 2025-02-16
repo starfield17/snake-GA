@@ -201,7 +201,7 @@ class SimpleGeneticAlgorithm:
                  mutation_rate: float = 0.3,
                  mutation_strength: float = 0.5,
                  elite_size: int = 5,
-                 num_threads: int = 4):
+                 num_threads: int = 8):
         self.population_size = population_size
         self.mutation_rate = mutation_rate
         self.mutation_strength = mutation_strength
