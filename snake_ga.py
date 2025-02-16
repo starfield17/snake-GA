@@ -230,18 +230,26 @@ class ImprovedParallelGeneticAlgorithm:
         return np.mean(diversities) if diversities else 0
     
     def evaluate_fitness_parallel(self, env_params: dict) -> List[float]:
-        pool = mp.Pool(self.num_workers)
-        try:
-            eval_func = partial(evaluate_network, 
-                              env_params=env_params,
-                              games_per_network=self.games_per_network)
-            
-            base_fitness_scores = pool.map(eval_func, self.population)
+        # 使用更小的批次大小来处理评估
+        batch_size = self.population_size // (self.num_workers * 2)
+        batches = [self.population[i:i + batch_size] for i in range(0, len(self.population), batch_size)]
+        
+        all_base_fitness_scores = []
+        with mp.Pool(self.num_workers) as pool:
+            for batch in batches:
+                eval_func = partial(evaluate_network, 
+                                  env_params=env_params,
+                                  games_per_network=self.games_per_network)
+                
+                batch_scores = pool.map(eval_func, batch)
+                all_base_fitness_scores.extend(batch_scores)
+                
+            # 计算多样性分数
             diversity_scores = []
             for network in self.population:
                 diversity = self.get_population_diversity(network)
                 diversity_scores.append(diversity)
-                
+            
             if diversity_scores:
                 min_div = min(diversity_scores)
                 max_div = max(diversity_scores)
@@ -249,16 +257,13 @@ class ImprovedParallelGeneticAlgorithm:
                     diversity_scores = [(d - min_div) / (max_div - min_div) for d in diversity_scores]
                 else:
                     diversity_scores = [1.0] * len(diversity_scores)
-                    
+            
             self.fitness_scores = [
                 base_fit * (1 - self.diversity_weight) + div * self.diversity_weight 
-                for base_fit, div in zip(base_fitness_scores, diversity_scores)
+                for base_fit, div in zip(all_base_fitness_scores, diversity_scores)
             ]
             
             return self.fitness_scores
-        finally:
-            pool.close()
-            pool.join()
     
     def select_parent(self) -> NeuralNetwork:
         tournament = random.sample(list(enumerate(self.fitness_scores)), self.tournament_size)
@@ -320,9 +325,19 @@ class ImprovedParallelGeneticAlgorithm:
         
         self.population = new_population
 
+
 def train_snake_ga_parallel_improved(generations=5000):
-    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+    # 设置进程启动方法
+    if sys.platform != 'darwin':  # 如果不是 MacOS
+        mp.set_start_method('fork', force=True)
+    
+    # 增加系统文件描述符限制
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+    except Exception as e:
+        print(f"Warning: Could not set file descriptor limit: {e}")
+    
     env_params = {
         'width': WIDTH,
         'height': HEIGHT,
@@ -330,56 +345,70 @@ def train_snake_ga_parallel_improved(generations=5000):
         'max_steps_without_food': 200
     }
     
-    ga = ImprovedParallelGeneticAlgorithm(num_workers=min(os.cpu_count(), 8))
+    # 减小种群大小和每个网络的游戏次数以加快评估
+    ga = ImprovedParallelGeneticAlgorithm(
+        population_size=100,  # 减小种群大小
+        games_per_network=3,  # 减少每个网络的评估次数
+        num_workers=min(os.cpu_count(), 4)  # 限制CPU核心数
+    )
+    
     best_score = 0
     best_networks = []
     
-    if sys.platform == 'darwin':
-        mp.set_start_method('spawn', force=True)
+    try:
+        for generation in range(generations):
+            fitness_scores = ga.evaluate_fitness_parallel(env_params)
+            max_fitness = max(fitness_scores)
+            avg_fitness = sum(fitness_scores) / len(fitness_scores)
+            best_idx = fitness_scores.index(max_fitness)
+            
+            # 每10代才进行完整的测试评估
+            if generation % 10 == 0:
+                env = SnakeEnv(**env_params)
+                test_scores = []
+                num_test_games = 5  # 减少测试游戏次数
+                
+                for _ in range(num_test_games):
+                    state = env.reset()
+                    while not env.game_over:
+                        state_tensor = torch.FloatTensor(state).unsqueeze(0)
+                        with torch.no_grad():
+                            action = ga.population[best_idx](state_tensor).argmax().item()
+                        state, _ = env.step(action)
+                    test_scores.append(env.score)
+                
+                current_score = sum(test_scores) / len(test_scores)
+                current_max = max(test_scores)
+                current_min = min(test_scores)
+                
+                if current_score > best_score:
+                    best_score = current_score
+                    best_network = copy.deepcopy(ga.population[best_idx])
+                    best_networks.append((best_score, best_network))
+                    best_networks.sort(key=lambda x: x[0], reverse=True)
+                    best_networks = best_networks[:5]
+                    torch.save(best_network.state_dict(), f"snake_ga_best_{best_score:.1f}.pth")
+                
+                print(f"Generation {generation + 1}/{generations}")
+                print(f"Best Score: {current_score:.1f} (min: {current_min}, max: {current_max})")
+                print(f"Average Fitness: {avg_fitness:.2f}")
+                print(f"All-time Best: {best_score:.1f}")
+                print(f"Mutation Rate: {ga.mutation_rate:.2f}, Strength: {ga.mutation_strength:.2f}")
+                print(f"Using {ga.num_workers} CPU cores")
+                print("------------------------")
+            else:
+                # 简单的进度打印
+                if generation % 5 == 0:  # 每5代打印一次简单进度
+                    print(f"Generation {generation + 1}: Avg Fitness = {avg_fitness:.2f}")
+            
+            ga.evolve()
+            
+    except KeyboardInterrupt:
+        print("\nTraining interrupted by user. Saving best network...")
+        if best_networks:
+            torch.save(best_networks[0][1].state_dict(), "snake_ga_interrupted.pth")
     
-    for generation in range(generations):
-        fitness_scores = ga.evaluate_fitness_parallel(env_params)
-        max_fitness = max(fitness_scores)
-        avg_fitness = sum(fitness_scores) / len(fitness_scores)
-        best_idx = fitness_scores.index(max_fitness)
-        
-        # 测试当前最佳网络
-        env = SnakeEnv(**env_params)
-        test_scores = []
-        num_test_games = 10
-        
-        for _ in range(num_test_games):
-            state = env.reset()
-            while not env.game_over:
-                state_tensor = torch.FloatTensor(state).unsqueeze(0)
-                with torch.no_grad():
-                    action = ga.population[best_idx](state_tensor).argmax().item()
-                state, _ = env.step(action)
-            test_scores.append(env.score)
-        
-        current_score = sum(test_scores) / len(test_scores)
-        current_max = max(test_scores)
-        current_min = min(test_scores)
-        
-        if current_score > best_score:
-            best_score = current_score
-            best_network = copy.deepcopy(ga.population[best_idx])
-            best_networks.append((best_score, best_network))
-            best_networks.sort(key=lambda x: x[0], reverse=True)
-            best_networks = best_networks[:5]
-            torch.save(best_network.state_dict(), f"snake_ga_best_{best_score:.1f}.pth")
-        
-        print(f"Generation {generation + 1}/{generations}")
-        print(f"Best Score: {current_score:.1f} (min: {current_min}, max: {current_max})")
-        print(f"Average Fitness: {avg_fitness:.2f}")
-        print(f"All-time Best: {best_score:.1f}")
-        print(f"Mutation Rate: {ga.mutation_rate:.2f}, Strength: {ga.mutation_strength:.2f}")
-        print(f"Using {ga.num_workers} CPU cores")
-        print("------------------------")
-        
-        ga.evolve()
-    
-    return best_networks[0][1]
+    return best_networks[0][1] if best_networks else None
 
 if __name__ == "__main__":
     best_network = train_snake_ga_parallel_improved()
