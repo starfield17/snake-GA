@@ -1,13 +1,18 @@
 import pygame
 import sys
 import torch
-from snake_ga import NeuralNetwork, SnakeEnv
 import glob
 import os
 import time
-import colorsys
+import numpy as np
+from stable_baselines3 import PPO
+from gymnasium import spaces
 
-pygame.init()
+# 保持与训练代码相同的环境设置
+WIDTH = 600
+HEIGHT = 400
+GRID_SIZE = 20
+SPEED = 30
 
 # 颜色定义
 WHITE = (255, 255, 255)
@@ -18,18 +23,14 @@ BLUE = (50, 150, 255)
 GRAY = (40, 40, 40)
 YELLOW = (255, 255, 0)
 
-WIDTH = 600
-HEIGHT = 400
-GRID_SIZE = 20
-SPEED = 30
+pygame.init()
 
 class SnakeGame:
     def __init__(self):
         # 设置窗口和标题
-        self.screen = pygame.display.set_mode((WIDTH + 200, HEIGHT))  # 增加了200像素宽度用于显示信息
-        pygame.display.set_caption("Snake AI Visualization")
+        self.screen = pygame.display.set_mode((WIDTH + 200, HEIGHT))
+        pygame.display.set_caption("Snake AI Visualization (PPO)")
         self.clock = pygame.time.Clock()
-        self.env = SnakeEnv(WIDTH, HEIGHT, GRID_SIZE)
         
         # 加载字体
         try:
@@ -43,28 +44,29 @@ class SnakeGame:
         self.start_time = time.time()
         self.frame_count = 0
         self.fps = 0
-        self.action_probs = torch.zeros(4)  # 存储动作概率
+        self.action_probs = np.zeros(4)
         
         # 加载模型
-        self.model = NeuralNetwork()
-        self._load_best_model()
+        self._load_model()
         
         self.games_played = 0
         self.total_score = 0
         self.best_score = 0
         self.last_10_scores = []
         
-    def _load_best_model(self):
-        model_files = glob.glob("snake_best_*.pth")
-        if not model_files:
-            print("No model files found.")
+        # 创建环境
+        from snake_ai import SnakeEnv  # 导入我们之前定义的环境
+        self.env = SnakeEnv(WIDTH, HEIGHT, GRID_SIZE)
+    
+    def _load_model(self):
+        model_path = "./models/snake_final_model.zip"
+        if not os.path.exists(model_path):
+            print(f"Model not found at {model_path}")
             sys.exit(1)
             
-        best_model_path = max(model_files, key=lambda x: float(x.split('_')[-1].split('.')[0]))
         try:
-            self.model.load_state_dict(torch.load(best_model_path))
-            self.model.eval()
-            print(f"Loaded model: {best_model_path}")
+            self.model = PPO.load(model_path)
+            print(f"Loaded model: {model_path}")
         except Exception as e:
             print(f"Error loading model: {e}")
             sys.exit(1)
@@ -74,7 +76,7 @@ class SnakeGame:
 
     def draw_grid(self):
         for x in range(0, WIDTH, GRID_SIZE):
-            alpha = 0.3 + 0.1 * (x / WIDTH)  # 渐变效果
+            alpha = 0.3 + 0.1 * (x / WIDTH)
             color = tuple(int(c * alpha) for c in GRAY)
             pygame.draw.line(self.screen, color, (x, 0), (x, HEIGHT))
         for y in range(0, HEIGHT, GRID_SIZE):
@@ -85,7 +87,7 @@ class SnakeGame:
     def draw_snake(self):
         # 绘制蛇身
         for i, segment in enumerate(self.env.snake[1:]):
-            alpha = 0.5 + 0.5 * (i / len(self.env.snake))  # 渐变效果
+            alpha = 0.5 + 0.5 * (i / len(self.env.snake))
             color = self._get_gradient_color(GREEN, (30, 200, 70), alpha)
             pygame.draw.rect(self.screen, color,
                            (segment[0], segment[1], GRID_SIZE-2, GRID_SIZE-2), border_radius=3)
@@ -122,10 +124,8 @@ class SnakeGame:
         ]
         
         for i, (label, value) in enumerate(stats):
-            # 标签
             label_surface = self.small_font.render(label + ":", True, (200, 200, 200))
             self.screen.blit(label_surface, (panel_x, 20 + i*40))
-            # 值
             value_surface = self.font.render(value, True, WHITE)
             self.screen.blit(value_surface, (panel_x + 70, 15 + i*40))
 
@@ -174,7 +174,7 @@ class SnakeGame:
     def run(self):
         global SPEED
         running = True
-        state = self.env.reset()
+        state, _ = self.env.reset()
         last_time = time.time()
         
         while running:
@@ -192,29 +192,29 @@ class SnakeGame:
                     if event.key == pygame.K_ESCAPE:
                         running = False
                     elif event.key == pygame.K_SPACE:
-                        state = self.env.reset()
+                        state, _ = self.env.reset()
                     elif event.key == pygame.K_UP:
                         SPEED = min(100, SPEED + 10)
                     elif event.key == pygame.K_DOWN:
                         SPEED = max(10, SPEED - 10)
             
             # AI决策
-            state_tensor = torch.FloatTensor(state).unsqueeze(0)
-            with torch.no_grad():
-                self.action_probs = self.model(state_tensor)[0]
-            action = self.action_probs.argmax().item()
+            action, _states = self.model.predict(state, deterministic=True)
+            # 获取动作概率（这里简化处理，因为PPO不直接输出概率）
+            self.action_probs = np.zeros(4)
+            self.action_probs[action] = 1.0
             
             # 环境更新
-            state, _ = self.env.step(action)
+            state, _, terminated, truncated, info = self.env.step(action)
             
-            if self.env.game_over:
+            if terminated or truncated:
                 self.games_played += 1
                 self.total_score += self.env.score
                 self.best_score = max(self.best_score, self.env.score)
                 self.last_10_scores.append(self.env.score)
                 if len(self.last_10_scores) > 10:
                     self.last_10_scores.pop(0)
-                state = self.env.reset()
+                state, _ = self.env.reset()
             
             # 渲染
             self.screen.fill(WHITE)
@@ -229,5 +229,10 @@ class SnakeGame:
         pygame.quit()
 
 if __name__ == "__main__":
+    print("Controls:")
+    print("Space: Reset game")
+    print("Up/Down: Adjust speed")
+    print("Esc: Quit")
+    print("\nStarting visualization...")
     game = SnakeGame()
     game.run()
