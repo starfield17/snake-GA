@@ -6,7 +6,7 @@ import torch.nn as nn
 import multiprocessing as mp
 from functools import partial
 import sys 
-
+import copy
 WIDTH = 600
 HEIGHT = 400
 GRID_SIZE = 20
@@ -145,7 +145,6 @@ class SnakeEnv:
         return np.array(state, dtype=np.float32)
 
 def evaluate_network(network: NeuralNetwork, env_params: dict, games_per_network: int = 5) -> float:
-    """评估单个网络的适应度"""
     env = SnakeEnv(**env_params)
     total_score = 0
     total_steps = 0
@@ -177,20 +176,25 @@ def evaluate_network(network: NeuralNetwork, env_params: dict, games_per_network
     
     return fitness
 
-class ParallelGeneticAlgorithm:
+class ImprovedParallelGeneticAlgorithm:
     def __init__(self, 
                  population_size: int = 200,
                  mutation_rate: float = 0.3,
                  mutation_strength: float = 0.5,
                  elite_size: int = 10,
                  games_per_network: int = 5,
-                 num_workers: int = None):
+                 num_workers: int = None,
+                 diversity_weight: float = 0.3, 
+                 tournament_size: int = 3): 
         self.population_size = population_size
         self.mutation_rate = mutation_rate
         self.mutation_strength = mutation_strength
         self.elite_size = elite_size
         self.games_per_network = games_per_network
         self.num_workers = num_workers or mp.cpu_count()
+        self.diversity_weight = diversity_weight
+        self.tournament_size = tournament_size
+        self.prev_avg_fitness = float('-inf')
         
         self.population = []
         self.fitness_scores = []
@@ -198,22 +202,70 @@ class ParallelGeneticAlgorithm:
             network = NeuralNetwork()
             self.population.append(network)
     
+    def calculate_diversity(self, network1: NeuralNetwork, network2: NeuralNetwork) -> float:
+        weights1 = network1.get_weights()
+        weights2 = network2.get_weights()
+        total_diff = 0
+        total_weights = 0
+        
+        for w1, w2 in zip(weights1, weights2):
+            diff = np.sum(np.abs(w1 - w2))
+            total_diff += diff
+            total_weights += w1.size
+        
+        return total_diff / total_weights
+    
+    def get_population_diversity(self, network: NeuralNetwork) -> float:
+        diversities = []
+        sample_size = min(20, len(self.population))
+        sample_population = random.sample(self.population, sample_size)
+        
+        for other in sample_population:
+            if other != network:
+                div = self.calculate_diversity(network, other)
+                diversities.append(div)
+        
+        return np.mean(diversities) if diversities else 0
+    
     def evaluate_fitness_parallel(self, env_params: dict) -> List[float]:
-        """并行评估所有网络的适应度"""
         with mp.Pool(self.num_workers) as pool:
             eval_func = partial(evaluate_network, 
                               env_params=env_params,
                               games_per_network=self.games_per_network)
             
-            self.fitness_scores = pool.map(eval_func, self.population)
+            base_fitness_scores = pool.map(eval_func, self.population)
+            diversity_scores = []
+            for network in self.population:
+                diversity = self.get_population_diversity(network)
+                diversity_scores.append(diversity)
+            if diversity_scores:
+                min_div = min(diversity_scores)
+                max_div = max(diversity_scores)
+                if max_div > min_div:
+                    diversity_scores = [(d - min_div) / (max_div - min_div) for d in diversity_scores]
+                else:
+                    diversity_scores = [1.0] * len(diversity_scores)
+            self.fitness_scores = [
+                base_fit * (1 - self.diversity_weight) + div * self.diversity_weight 
+                for base_fit, div in zip(base_fitness_scores, diversity_scores)
+            ]
             
         return self.fitness_scores
     
     def select_parent(self) -> NeuralNetwork:
-        tournament_size = 5
-        tournament = random.sample(list(enumerate(self.fitness_scores)), tournament_size)
+        tournament = random.sample(list(enumerate(self.fitness_scores)), self.tournament_size)
         winner_idx = max(tournament, key=lambda x: x[1])[0]
         return self.population[winner_idx]
+    
+    def adaptive_mutation(self, avg_fitness: float):
+        if avg_fitness < self.prev_avg_fitness:
+            self.mutation_strength = max(0.1, self.mutation_strength * 0.9)
+            self.mutation_rate = min(0.8, self.mutation_rate * 1.1)
+        else:
+            self.mutation_strength = min(0.5, self.mutation_strength * 1.05)
+            self.mutation_rate = max(0.3, self.mutation_rate * 0.95)
+        
+        self.prev_avg_fitness = avg_fitness
     
     def crossover(self, parent1: NeuralNetwork, parent2: NeuralNetwork) -> NeuralNetwork:
         child = NeuralNetwork()
@@ -222,13 +274,13 @@ class ParallelGeneticAlgorithm:
         child_weights = []
         
         for w1, w2 in zip(parent1_weights, parent2_weights):
-            mask = np.random.rand(*w1.shape) < 0.5
-            child_weight = np.where(mask, w1, w2)
+            alpha = np.random.rand(*w1.shape)
+            child_weight = alpha * w1 + (1 - alpha) * w2
             child_weights.append(child_weight)
         
         child.set_weights(child_weights)
         return child
-    
+
     def mutate(self, network: NeuralNetwork):
         weights = network.get_weights()
         mutated_weights = []
@@ -236,6 +288,8 @@ class ParallelGeneticAlgorithm:
         for weight in weights:
             if random.random() < self.mutation_rate:
                 mutation = np.random.normal(0, self.mutation_strength, weight.shape)
+                mutation_mask = np.random.rand(*weight.shape) < 0.3
+                mutation = mutation * mutation_mask
                 mutated_weight = weight + mutation
                 mutated_weights.append(mutated_weight)
             else:
@@ -244,9 +298,11 @@ class ParallelGeneticAlgorithm:
         network.set_weights(mutated_weights)
     
     def evolve(self):
+        avg_fitness = sum(self.fitness_scores) / len(self.fitness_scores)
+        self.adaptive_mutation(avg_fitness)
+
         sorted_indices = np.argsort(self.fitness_scores)[::-1]
         new_population = [self.population[i] for i in sorted_indices[:self.elite_size]]
-        
         while len(new_population) < self.population_size:
             parent1 = self.select_parent()
             parent2 = self.select_parent()
@@ -256,7 +312,7 @@ class ParallelGeneticAlgorithm:
         
         self.population = new_population
 
-def train_snake_ga_parallel(generations=5000):
+def train_snake_ga_parallel_improved(generations=5000):
     env_params = {
         'width': WIDTH,
         'height': HEIGHT,
@@ -264,10 +320,9 @@ def train_snake_ga_parallel(generations=5000):
         'max_steps_without_food': 200
     }
     
-    ga = ParallelGeneticAlgorithm()
+    ga = ImprovedParallelGeneticAlgorithm()
     best_score = 0
-    stagnation_counter = 0
-    last_best_fitness = float('-inf')
+    best_networks = []
     
     if sys.platform == 'darwin':
         mp.set_start_method('spawn', force=True)
@@ -278,6 +333,7 @@ def train_snake_ga_parallel(generations=5000):
         avg_fitness = sum(fitness_scores) / len(fitness_scores)
         best_idx = fitness_scores.index(max_fitness)
         
+        # 测试当前最佳网络
         env = SnakeEnv(**env_params)
         test_scores = []
         num_test_games = 10
@@ -294,32 +350,26 @@ def train_snake_ga_parallel(generations=5000):
         current_score = sum(test_scores) / len(test_scores)
         current_max = max(test_scores)
         current_min = min(test_scores)
+        
         if current_score > best_score:
             best_score = current_score
-            torch.save(ga.population[best_idx].state_dict(), "snake_ga_best.pth")
+            best_network = copy.deepcopy(ga.population[best_idx])
+            best_networks.append((best_score, best_network))
+            best_networks.sort(key=lambda x: x[0], reverse=True)
+            best_networks = best_networks[:5]
+            torch.save(best_network.state_dict(), f"snake_ga_best_{best_score:.1f}.pth")
         
         print(f"Generation {generation + 1}/{generations}")
         print(f"Best Score: {current_score:.1f} (min: {current_min}, max: {current_max})")
         print(f"Average Fitness: {avg_fitness:.2f}")
         print(f"All-time Best: {best_score:.1f}")
+        print(f"Mutation Rate: {ga.mutation_rate:.2f}, Strength: {ga.mutation_strength:.2f}")
         print(f"Using {ga.num_workers} CPU cores")
         print("------------------------")
         
-        if max_fitness <= last_best_fitness:
-            stagnation_counter += 1
-        else:
-            stagnation_counter = 0
-            last_best_fitness = max_fitness
-        
-        if stagnation_counter > 30:
-            ga.mutation_rate = min(0.8, ga.mutation_rate * 1.2)
-            ga.mutation_strength = min(1.0, ga.mutation_strength * 1.2)
-            print(f"Increasing mutation rate to {ga.mutation_rate:.2f}")
-            stagnation_counter = 0
-        
         ga.evolve()
     
-    return ga.population[fitness_scores.index(max(fitness_scores))]
+    return best_networks[0][1]
 
 if __name__ == "__main__":
-    best_network = train_snake_ga_parallel()
+    best_network = train_snake_ga_parallel_improved()
