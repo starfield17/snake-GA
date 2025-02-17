@@ -23,8 +23,9 @@ class SnakeEnv(gym.Env):
         self.grid_size = grid_size
         
         self.action_space = spaces.Discrete(4)
+        # 扩展状态空间
         self.observation_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(19,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(25,), dtype=np.float32
         )
         
         self.reset()
@@ -50,6 +51,7 @@ class SnakeEnv(gym.Env):
         head_x, head_y = self.snake[0]
         food_x, food_y = self.food
         
+        # 计算到食物的距离和方向
         food_distance = ((food_x - head_x)**2 + (food_y - head_y)**2)**0.5
         food_direction = [
             float(food_x < head_x),
@@ -58,6 +60,23 @@ class SnakeEnv(gym.Env):
             float(food_y > head_y)
         ]
         
+        # 计算到最近墙壁的距离
+        wall_distances = [
+            head_x / self.width,  # 左墙
+            (self.width - head_x) / self.width,  # 右墙
+            head_y / self.height,  # 上墙
+            (self.height - head_y) / self.height  # 下墙
+        ]
+        
+        # 计算蛇头方向与食物的夹角
+        angle = 0.0
+        if self.dx != 0 or self.dy != 0:
+            current_direction = np.array([self.dx, self.dy])
+            food_vector = np.array([food_x - head_x, food_y - head_y])
+            if np.linalg.norm(food_vector) > 0:
+                angle = np.dot(current_direction, food_vector) / (np.linalg.norm(current_direction) * np.linalg.norm(food_vector))
+        
+        # 危险区域检测
         danger_map = []
         for dy in [-self.grid_size, 0, self.grid_size]:
             for dx in [-self.grid_size, 0, self.grid_size]:
@@ -65,14 +84,21 @@ class SnakeEnv(gym.Env):
                     continue
                 danger_map.append(self._check_collision(head_x + dx, head_y + dy))
         
+        # 计算空间利用率
+        total_cells = (self.width // self.grid_size) * (self.height // self.grid_size)
+        space_utilization = len(self.snake) / total_cells
+        
         state = np.array([
             (food_x - head_x) / self.width,
             (food_y - head_y) / self.height,
             food_distance / (self.width**2 + self.height**2)**0.5,
             self.dx / self.grid_size,
             self.dy / self.grid_size,
+            angle,  # 添加角度信息
             *food_direction,
+            *wall_distances,  # 添加墙壁距离
             *danger_map,
+            space_utilization,  # 添加空间利用率
             len(self.snake) / (self.width * self.height / (self.grid_size * self.grid_size)),
             self.steps / self.max_steps
         ], dtype=np.float32)
@@ -88,10 +114,9 @@ class SnakeEnv(gym.Env):
         self.steps += 1
         terminated = False
         
-        # 保存当前方向
         current_dx, current_dy = self.dx, self.dy
         
-        # 根据动作更新方向
+        # 更新方向
         if action == 0 and current_dy != self.grid_size:  # 上
             self.dx, self.dy = 0, -self.grid_size
         elif action == 1 and current_dx != -self.grid_size:  # 右
@@ -101,40 +126,47 @@ class SnakeEnv(gym.Env):
         elif action == 3 and current_dx != self.grid_size:  # 左
             self.dx, self.dy = -self.grid_size, 0
         
-        # 计算新的头部位置
         new_head = (self.snake[0][0] + self.dx, self.snake[0][1] + self.dy)
         
-        # 检查是否撞墙或撞到自己
+        # 碰撞检测
         if (new_head in self.snake or 
             new_head[0] < 0 or new_head[0] >= self.width or 
             new_head[1] < 0 or new_head[1] >= self.height):
             terminated = True
-            reward = -1
+            reward = -2.0  # 增加碰撞惩罚
             return self._get_state(), reward, terminated, False, {'score': self.score}
         
-        # 计算移动前到食物的距离
+        # 计算移动前后到食物的距离变化
         old_distance = ((self.snake[0][0] - self.food[0])**2 + 
                        (self.snake[0][1] - self.food[1])**2)**0.5
-        
-        # 计算移动后到食物的距离
         new_distance = ((new_head[0] - self.food[0])**2 + 
                        (new_head[1] - self.food[1])**2)**0.5
         
-        # 根据距离变化计算奖励
-        distance_reward = (old_distance - new_distance) * 0.01
+        # 计算到墙壁的距离
+        wall_distance = min(
+            new_head[0],  # 左墙
+            self.width - new_head[0],  # 右墙
+            new_head[1],  # 上墙
+            self.height - new_head[1]  # 下墙
+        ) / self.grid_size
+        
+        # 根据距离变化和墙壁距离计算奖励
+        distance_reward = (old_distance - new_distance) * 0.02
+        wall_penalty = -0.01 if wall_distance <= 1 else 0  # 靠近墙壁的惩罚
         
         # 添加新的头部
         self.snake.insert(0, new_head)
         
-        # 基础奖励（降低生存奖励）
-        reward = 0.01 + distance_reward
+        # 基础奖励
+        reward = 0.01 + distance_reward + wall_penalty
         
-        # 如果吃到食物
+        # 吃到食物的奖励
         if self.snake[0] == self.food:
             self.score += 1
             self.food = self._new_food()
-            # 增加吃到食物的奖励，并根据蛇长度增加奖励
-            reward = 2.0 + (len(self.snake) * 0.2)
+            # 根据蛇长度和剩余空间动态调整奖励
+            space_left = 1 - (len(self.snake) / ((self.width // self.grid_size) * (self.height // self.grid_size)))
+            reward = 3.0 + (len(self.snake) * 0.3) * (1 / space_left)
         else:
             self.snake.pop()
         
@@ -143,17 +175,16 @@ class SnakeEnv(gym.Env):
             self.position_history = []
         
         self.position_history.append(new_head)
-        if len(self.position_history) > 50:  # 保持最近50步的历史
+        if len(self.position_history) > 50:
             self.position_history.pop(0)
-            # 如果最近50步中重复位置过多
             unique_positions = len(set(self.position_history))
-            if unique_positions < 10:  # 如果不同位置少于10个
-                reward -= 0.5  # 给予重复移动惩罚
+            if unique_positions < 10:
+                reward -= 1.0  # 增加重复移动惩罚
         
         # 检查最大步数
         if self.steps >= self.max_steps:
             terminated = True
-            reward = -0.5
+            reward = -1.0
         
         return self._get_state(), reward, terminated, False, {'score': self.score}
 
@@ -213,10 +244,17 @@ def train_snake(total_timesteps=10000000):
         learning_rate=2e-4,
         n_steps=n_steps,
         batch_size=batch_size,
-        n_epochs=10,
+        n_epochs=12,
         gamma=0.995,
         gae_lambda=0.98,
         clip_range=0.15,
+        ent_coef=0.01,
+        policy_kwargs=dict(
+            net_arch=dict(
+                pi=[256, 256, 128],  # 扩大策略网络
+                vf=[256, 256, 128]  # 扩大价值网络
+            )
+        ),
         tensorboard_log=tensorboard_log,
         device='cpu'  # 确保使用 CPU 训练
     )
