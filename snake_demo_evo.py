@@ -31,12 +31,38 @@ class SnakeEnvDemo(gym.Env):
         self.grid_size = grid_size
         
         self.action_space = spaces.Discrete(4)
-        # 更新为25维状态空间
         self.observation_space = spaces.Box(
             low=-1.0, high=1.0, shape=(25,), dtype=np.float32
         )
         
+        # 初始化随机数生成器
+        self.np_random = np.random.default_rng()
+        
+        # 执行第一次重置
         self.reset()
+    
+    def reset(self, seed=None, options=None):
+        # 处理随机种子
+        super().reset(seed=seed)
+        if seed is not None:
+            self.np_random = np.random.default_rng(seed)
+            
+        # 重置蛇的位置和方向
+        self.snake = [(self.width//2, self.height//2)]
+        self.dx, self.dy = self.grid_size, 0
+        self.food = self._new_food()
+        self.score = 0
+        self.steps = 0
+        
+        # 返回初始状态和空字典
+        return self._get_state(), {}
+    
+    def _new_food(self):
+        while True:
+            x = self.np_random.integers(0, self.width//self.grid_size) * self.grid_size
+            y = self.np_random.integers(0, self.height//self.grid_size) * self.grid_size
+            if (x, y) not in self.snake:
+                return (x, y)
     
     def _get_state(self):
         head_x, head_y = self.snake[0]
@@ -95,7 +121,12 @@ class SnakeEnvDemo(gym.Env):
         ], dtype=np.float32)
         
         return state
-        
+    
+    def _check_collision(self, x, y):
+        return 1.0 if (x < 0 or x >= self.width or 
+                      y < 0 or y >= self.height or 
+                      (x, y) in self.snake) else 0.0
+    
     def step(self, action):
         self.steps += 1
         terminated = False
@@ -146,52 +177,6 @@ class SnakeEnvDemo(gym.Env):
             self.food = self._new_food()
             space_left = 1 - (len(self.snake) / ((self.width // self.grid_size) * (self.height // self.grid_size)))
             reward = 3.0 + (len(self.snake) * 0.3) * (1 / space_left)
-        else:
-            self.snake.pop()
-        
-        return self._get_state(), reward, terminated, False, {'score': self.score}
-    
-    def _check_collision(self, x, y):
-        return 1.0 if (x < 0 or x >= self.width or 
-                      y < 0 or y >= self.height or 
-                      (x, y) in self.snake) else 0.0
-    
-    def step(self, action):
-        self.steps += 1
-        terminated = False
-        
-        # 更新蛇的方向
-        current_dx, current_dy = self.dx, self.dy
-        if action == 0 and current_dy != self.grid_size:  # 上
-            self.dx, self.dy = 0, -self.grid_size
-        elif action == 1 and current_dx != -self.grid_size:  # 右
-            self.dx, self.dy = self.grid_size, 0
-        elif action == 2 and current_dy != -self.grid_size:  # 下
-            self.dx, self.dy = 0, self.grid_size
-        elif action == 3 and current_dx != self.grid_size:  # 左
-            self.dx, self.dy = -self.grid_size, 0
-        
-        # 移动蛇头
-        new_head = (self.snake[0][0] + self.dx, self.snake[0][1] + self.dy)
-        
-        # 检查碰撞
-        if (new_head in self.snake or 
-            new_head[0] < 0 or new_head[0] >= self.width or 
-            new_head[1] < 0 or new_head[1] >= self.height):
-            terminated = True
-            reward = -1
-            return self._get_state(), reward, terminated, False, {'score': self.score}
-        
-        self.snake.insert(0, new_head)
-        
-        # 基础奖励
-        reward = 0.1
-        
-        # 吃到食物
-        if self.snake[0] == self.food:
-            self.score += 1
-            self.food = self._new_food()
-            reward = 1.0 + (len(self.snake) * 0.1)
         else:
             self.snake.pop()
         
@@ -344,7 +329,8 @@ class SnakeGame:
     def run(self):
         global SPEED
         running = True
-        state, _ = self.env.reset()
+        obs_tuple = self.env.reset()
+        state = obs_tuple[0]
         last_time = time.time()
         
         while running:
