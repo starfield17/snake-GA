@@ -1,5 +1,5 @@
 # 首先安装必要的依赖:
-# pip install gymnasium numpy torch stable-baselines3
+# pip install gymnasium numpy torch stable-baselines3 stable-baselines3[extra]
 # 可选依赖:
 # pip install tensorboard  # 用于训练可视化
 
