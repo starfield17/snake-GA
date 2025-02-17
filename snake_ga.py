@@ -199,21 +199,40 @@ def make_env(rank, seed=0):
     set_random_seed(seed)
     return _init
 
-def train_snake(total_timesteps=10000000):
+def train_snake(total_timesteps=10000000, force_cpu=False):
     # 创建日志和模型目录
     log_dir = "./logs"
     model_dir = "./models"
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
 
-    # 确定可用的 CPU 核心数，留出一个核心给系统
-    num_cpu = max(1, multiprocessing.cpu_count() - 1)
+    # 确定设备
+    if force_cpu:
+        device = 'cpu'
+    else:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    # 打印训练设备信息
+    if device == 'cuda':
+        print(f"Training on GPU: {torch.cuda.get_device_name(0)}")
+    else:
+        print("Training on CPU")
+
+    # 根据设备类型确定并行度
+    if device == 'cuda':
+        # GPU 训练时使用较少的环境数量，因为 GPU 可以更高效地处理大批量数据
+        num_cpu = 4  # 或者其他合适的数值
+    else:
+        # CPU 训练时使用更多的并行环境
+        num_cpu = max(1, multiprocessing.cpu_count() - 1)
+    
+    print(f"Using {num_cpu} parallel environments")
     
     # 创建并行环境
     env = SubprocVecEnv([make_env(i) for i in range(num_cpu)])
     env = VecMonitor(env)
     
-    # 创建评估环境（单个环境即可）
+    # 创建评估环境
     eval_env = SubprocVecEnv([make_env(num_cpu)])
     eval_callback = EvalCallback(
         eval_env,
@@ -232,9 +251,15 @@ def train_snake(total_timesteps=10000000):
         print("TensorBoard not installed. Training will proceed without TensorBoard logging.")
         tensorboard_log = None
     
-    # 优化批处理大小和步数以适应并行环境
-    n_steps = 2048 // num_cpu  # 确保总步数保持不变
-    batch_size = min(64 * num_cpu, n_steps * num_cpu)  # 根据并行度调整批处理大小
+    # 根据设备类型优化超参数
+    if device == 'cuda':
+        # GPU 训练时可以使用更大的批量
+        n_steps = 2048
+        batch_size = 1024
+    else:
+        # CPU 训练时使用较小的批量
+        n_steps = 2048 // num_cpu
+        batch_size = min(64 * num_cpu, n_steps * num_cpu)
     
     # 创建并训练模型
     model = PPO(
@@ -251,13 +276,14 @@ def train_snake(total_timesteps=10000000):
         ent_coef=0.01,
         policy_kwargs=dict(
             net_arch=dict(
-                pi=[512, 384, 256, 192, 128],  # 更深的策略网络
-                vf=[512, 384, 256, 192, 128]   # 更深的价值网络
+                pi=[512, 384, 256, 128],
+                vf=[384, 256, 128]
             )
         ),
         tensorboard_log=tensorboard_log,
-        device='cpu'  # 确保使用 CPU 训练
+        device=device  # 使用检测到的设备
     )
+    
     try:
         model.learn(
             total_timesteps=total_timesteps,
@@ -276,13 +302,18 @@ def train_snake(total_timesteps=10000000):
     return model
 
 if __name__ == "__main__":
-    print(f"Starting Snake AI training using {max(1, multiprocessing.cpu_count() - 1)} CPU cores...")
-    print("Required packages: gymnasium, numpy, torch, stable-baselines3")
-    print("Optional package: tensorboard (for training visualization)")
-    print("\nPress Ctrl+C to stop training and save the model")
-    print("=" * 50)
-    
     # 设置全局随机种子
     set_random_seed(42)
     
+    # 检测可用设备
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"Available device: {device}")
+    if device == 'cuda':
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
+    
+    print("\nPress Ctrl+C to stop training and save the model")
+    print("=" * 50)
+    
+    # 开始训练
     model = train_snake()
