@@ -251,8 +251,8 @@ def train_snake(total_timesteps=10000000):
         ent_coef=0.01,
         policy_kwargs=dict(
             net_arch=dict(
-                pi=[512, 384, 256, 128],
-                vf=[384, 256, 128]
+                pi=[512, 384, 256, 128, 64, 32, 16],
+                vf=[384, 256, 128, 64, 32, 16]
             )
         ),
         tensorboard_log=tensorboard_log,
