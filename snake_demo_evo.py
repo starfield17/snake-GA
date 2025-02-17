@@ -30,36 +30,19 @@ class SnakeEnvDemo(gym.Env):
         self.height = height
         self.grid_size = grid_size
         
-        # 定义动作空间 (上、右、下、左)
         self.action_space = spaces.Discrete(4)
-        
-        # 定义观察空间 (与训练时相同的19个状态值)
+        # 更新为25维状态空间
         self.observation_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(19,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(25,), dtype=np.float32
         )
         
         self.reset()
-    
-    def reset(self, seed=None):
-        super().reset(seed=seed)
-        self.snake = [(self.width//2, self.height//2)]
-        self.dx, self.dy = self.grid_size, 0
-        self.food = self._new_food()
-        self.score = 0
-        self.steps = 0
-        return self._get_state(), {}
-    
-    def _new_food(self):
-        while True:
-            x = np.random.randint(0, self.width//self.grid_size) * self.grid_size
-            y = np.random.randint(0, self.height//self.grid_size) * self.grid_size
-            if (x, y) not in self.snake:
-                return (x, y)
     
     def _get_state(self):
         head_x, head_y = self.snake[0]
         food_x, food_y = self.food
         
+        # 计算到食物的距离和方向
         food_distance = ((food_x - head_x)**2 + (food_y - head_y)**2)**0.5
         food_direction = [
             float(food_x < head_x),
@@ -68,6 +51,23 @@ class SnakeEnvDemo(gym.Env):
             float(food_y > head_y)
         ]
         
+        # 计算到最近墙壁的距离
+        wall_distances = [
+            head_x / self.width,  # 左墙
+            (self.width - head_x) / self.width,  # 右墙
+            head_y / self.height,  # 上墙
+            (self.height - head_y) / self.height  # 下墙
+        ]
+        
+        # 计算蛇头方向与食物的夹角
+        angle = 0.0
+        if self.dx != 0 or self.dy != 0:
+            current_direction = np.array([self.dx, self.dy])
+            food_vector = np.array([food_x - head_x, food_y - head_y])
+            if np.linalg.norm(food_vector) > 0:
+                angle = np.dot(current_direction, food_vector) / (np.linalg.norm(current_direction) * np.linalg.norm(food_vector))
+        
+        # 危险区域检测
         danger_map = []
         for dy in [-self.grid_size, 0, self.grid_size]:
             for dx in [-self.grid_size, 0, self.grid_size]:
@@ -75,19 +75,81 @@ class SnakeEnvDemo(gym.Env):
                     continue
                 danger_map.append(self._check_collision(head_x + dx, head_y + dy))
         
+        # 计算空间利用率
+        total_cells = (self.width // self.grid_size) * (self.height // self.grid_size)
+        space_utilization = len(self.snake) / total_cells
+        
         state = np.array([
             (food_x - head_x) / self.width,
             (food_y - head_y) / self.height,
             food_distance / (self.width**2 + self.height**2)**0.5,
             self.dx / self.grid_size,
             self.dy / self.grid_size,
+            angle,  # 添加角度信息
             *food_direction,
+            *wall_distances,  # 添加墙壁距离
             *danger_map,
+            space_utilization,  # 添加空间利用率
             len(self.snake) / (self.width * self.height / (self.grid_size * self.grid_size)),
-            self.steps / 1000.0  # 使用一个大数来归一化步数
+            self.steps / 1000.0
         ], dtype=np.float32)
         
         return state
+        
+    def step(self, action):
+        self.steps += 1
+        terminated = False
+        
+        current_dx, current_dy = self.dx, self.dy
+        if action == 0 and current_dy != self.grid_size:  # 上
+            self.dx, self.dy = 0, -self.grid_size
+        elif action == 1 and current_dx != -self.grid_size:  # 右
+            self.dx, self.dy = self.grid_size, 0
+        elif action == 2 and current_dy != -self.grid_size:  # 下
+            self.dx, self.dy = 0, self.grid_size
+        elif action == 3 and current_dx != self.grid_size:  # 左
+            self.dx, self.dy = -self.grid_size, 0
+        
+        new_head = (self.snake[0][0] + self.dx, self.snake[0][1] + self.dy)
+        
+        # 碰撞检测
+        if (new_head in self.snake or 
+            new_head[0] < 0 or new_head[0] >= self.width or 
+            new_head[1] < 0 or new_head[1] >= self.height):
+            terminated = True
+            reward = -2.0
+            return self._get_state(), reward, terminated, False, {'score': self.score}
+            
+        # 计算移动前后到食物的距离变化
+        old_distance = ((self.snake[0][0] - self.food[0])**2 + 
+                       (self.snake[0][1] - self.food[1])**2)**0.5
+        new_distance = ((new_head[0] - self.food[0])**2 + 
+                       (new_head[1] - self.food[1])**2)**0.5
+        
+        # 计算到墙壁的距离
+        wall_distance = min(
+            new_head[0],
+            self.width - new_head[0],
+            new_head[1],
+            self.height - new_head[1]
+        ) / self.grid_size
+        
+        distance_reward = (old_distance - new_distance) * 0.02
+        wall_penalty = -0.01 if wall_distance <= 1 else 0
+        
+        self.snake.insert(0, new_head)
+        
+        reward = 0.01 + distance_reward + wall_penalty
+        
+        if self.snake[0] == self.food:
+            self.score += 1
+            self.food = self._new_food()
+            space_left = 1 - (len(self.snake) / ((self.width // self.grid_size) * (self.height // self.grid_size)))
+            reward = 3.0 + (len(self.snake) * 0.3) * (1 / space_left)
+        else:
+            self.snake.pop()
+        
+        return self._get_state(), reward, terminated, False, {'score': self.score}
     
     def _check_collision(self, x, y):
         return 1.0 if (x < 0 or x >= self.width or 
