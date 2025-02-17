@@ -251,8 +251,8 @@ def train_snake(total_timesteps=10000000):
         ent_coef=0.01,
         policy_kwargs=dict(
             net_arch=dict(
-                pi=[256, 256, 128],  # 扩大策略网络
-                vf=[256, 256, 128]  # 扩大价值网络
+                pi=[512, 384, 256, 192, 128],  # 更深的策略网络
+                vf=[512, 384, 256, 192, 128]   # 更深的价值网络
             )
         ),
         tensorboard_log=tensorboard_log,
