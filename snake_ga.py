@@ -232,9 +232,17 @@ def train_snake(total_timesteps=10000000):
         print("TensorBoard not installed. Training will proceed without TensorBoard logging.")
         tensorboard_log = None
     
+    # 检测是否有可用的 GPU
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Training will use device: {device}")
+    
     # 优化批处理大小和步数以适应并行环境
     n_steps = 2048 // num_cpu  # 确保总步数保持不变
     batch_size = min(64 * num_cpu, n_steps * num_cpu)  # 根据并行度调整批处理大小
+    
+    # 如果使用 GPU，可以考虑增大批处理大小
+    if device.type == 'cuda':
+        batch_size = min(batch_size * 2, n_steps * num_cpu)  # GPU 可以处理更大的批次
     
     # 创建并训练模型
     model = PPO(
@@ -256,7 +264,7 @@ def train_snake(total_timesteps=10000000):
             )
         ),
         tensorboard_log=tensorboard_log,
-        device='cpu'  # 确保使用 CPU 训练
+        device=device  # 使用检测到的设备（GPU 或 CPU）
     )
     try:
         model.learn(
@@ -274,6 +282,7 @@ def train_snake(total_timesteps=10000000):
         eval_env.close()
     
     return model
+
 
 if __name__ == "__main__":
     print(f"Starting Snake AI training using {max(1, multiprocessing.cpu_count() - 1)} CPU cores...")
